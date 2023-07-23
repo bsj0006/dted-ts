@@ -1,6 +1,11 @@
 {
   "name": "dted-tile",
   "version": "1.0.0",
+  "description": "Library for parsing DTED files.",
+  "keywords": ["terrain", "elevation", "dted"],
+  "homepage": "https://github.com/bsj0006/dted-ts",
+  "license": "MIT",
+  "author": { "name": "Bradley Johnson" },
   "source": "src/dted.ts",
   "main": "dist/dted.js",
   "types": "dist/types.d.ts",
