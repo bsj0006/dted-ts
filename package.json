@@ -1,0 +1,21 @@
+{
+  "name": "dted-tile",
+  "version": "1.0.0",
+  "source": "src/dted.ts",
+  "main": "dist/dted.js",
+  "types": "dist/types.d.ts",
+  "scripts": {
+    "watch": "parcel watch",
+    "build": "parcel build",
+    "test": "jest"
+  },
+  "devDependencies": {
+    "@parcel/packager-ts": "^2.9.2",
+    "@parcel/transformer-typescript-types": "^2.9.2",
+    "@types/node": "^20.3.1",
+    "jest": "^29.6.1",
+    "parcel": "^2.9.2",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.1.3"
+  }
+}
