@@ -31,6 +31,9 @@ jobs:
     
   
   publish-npm:
+    on:
+      release:
+        types: [created]
     needs: build
     runs-on: ubuntu-latest
     steps:
