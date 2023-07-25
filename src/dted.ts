@@ -1,6 +1,7 @@
 import { strict as assert } from 'assert';
 import * as fs from 'fs'
 import * as fsPromises from 'node:fs/promises';
+import * as _ from 'lodash'
 
 const DTED_VOID: number = -32767
 const UHL_LENGTH = 80
@@ -12,21 +13,19 @@ const ACC_OFFSET = UHL_LENGTH + DSI_LENGTH
 const DATA_RECORD_OFFSET = UHL_LENGTH + DSI_LENGTH + ACC_LENGTH
 
 /**
- * 80 bytes at the start of the DTED file
+ * This contains basic sata about the DTED file. More detailed info will be in the DataSetIdentificationRecord or the AccuracyDescriptionRecord. 80 bytes at the start of the DTED file
  */
 class UserHeaderLabel {
-    //Should be UHL
-    sentinel: string;
     // DDDMMSSH
     originLongitudeDeg: number 
     // DDDMMSSH
     originLatitudeDeg: number
-    //tenths of seconds
-    longitudeInterval: number
-    //tenths of seconds
-    latitudeInterval: number
+    //seconds
+    longitudeIntervalSec: number
+    //seconds
+    latitudeIntervalSec: number
     absoluteVerticalAccuracyStr?: number = undefined
-    securityCode: string //It better be unclassified
+    securityCode: string
     urn: string
     longitudeLineCount: number
     latitudeLineCount: number
@@ -37,8 +36,8 @@ class UserHeaderLabel {
         assert(uhlStr.slice(0, 3) === "UHL")
         this.originLongitudeDeg = parseDDDMMSSH(uhlStr, 4)
         this.originLatitudeDeg = parseDDDMMSSH(uhlStr, 12)
-        this.longitudeInterval = parseInt(uhlStr.slice(20, 24))
-        this.latitudeInterval = parseInt(uhlStr.slice(24, 28))
+        this.longitudeIntervalSec = parseInt(uhlStr.slice(20, 24)) / 10
+        this.latitudeIntervalSec = parseInt(uhlStr.slice(24, 28)) / 10
         this.absoluteVerticalAccuracyStr = parseIntOrNa(uhlStr.slice(28, 32))
         this.securityCode = uhlStr.slice(32, 35).trim()
         assert(this.securityCode === "U", "This software should not be used with classified data.")
@@ -51,7 +50,7 @@ class UserHeaderLabel {
 }
 
 /**
- * 648 bytes after the UHL.
+ * Contains bulk of DTED metadata. 648 bytes after the UHL.
  */
 class DataSetIdentifictionRecord {
     securityCode: string
@@ -218,7 +217,33 @@ class DataRecord {
         this.data = record
     }
 
-    public getElevation(index: number):  number {
+    /**
+     * Gets the largest elevation in a DTED data record.
+     */
+    public getMaxElelvation() : number {
+        const startIndex = 0;
+        const endIndex = (this.data.length - 12)/2 //Subtract header and footer
+        let maxElevation = Number.MIN_VALUE
+        for(var i=startIndex; i<endIndex; i++) {
+            maxElevation = Math.max(maxElevation, this.getNearestElevation(i))
+        }
+        return maxElevation
+    }
+
+    /**
+     * Gets the smallest elevation in a DTED data record.
+     */
+    public getMinElelvation() : number {
+        const startIndex = 0;
+        const endIndex = (this.data.length - 12)/2 //Subtract header and footer
+        let minElevation = Number.MIN_VALUE
+        for(var i=startIndex; i<endIndex; i++) {
+            minElevation = Math.min(minElevation, this.getNearestElevation(i))
+        }
+        return minElevation
+    }
+
+    public getNearestElevation(index: number):  number {
         if(index < 0) {
             throw new Error("Expected non-negative index for retrieving elevation");  
         }
@@ -229,7 +254,11 @@ class DataRecord {
         return fromSignedMagnitude(this.data.slice(index, index+2))
     }
 
-    public validateChecksum() {
+    /**
+     * Validates the checksum on a Data Record.
+     * @returns True if valid.
+     */
+    public validateChecksum() : boolean {
         let calculatedChecksum: number = 0
         let i = 0
         for(; i < this.data.length - 4; i++) {
@@ -240,13 +269,34 @@ class DataRecord {
     }
 }
 
+
+type DtedTileOptions = {
+    /**
+     * True to validate the checksums of the dted file upon creation.
+     */
+    validateChecksum? : boolean
+}
+
+const default_tile_options: DtedTileOptions = {
+    validateChecksum: true
+}
+
+/**
+ * Represents a Dted file. These can be dted0, dted1, or dted2 files as defined in MIL-PRF-89020B.
+ */
 class DtedTile {
-    filePath: string
     uhl: UserHeaderLabel
     dsi: DataSetIdentifictionRecord
     acc: AccuracyDescriptionRecord
     records: Array<DataRecord>
-    constructor(fileBuffer: Buffer) {
+
+    //These are cached after the first call in case you're a monster who gets the max/min multiple times.
+    maxElevation: number | undefined = undefined
+    minElevation: number | undefined = undefined
+
+    constructor(fileBuffer: Buffer, options: Partial<DtedTileOptions> = {}) {
+        const options_internal: DtedTileOptions = Object.assign(default_tile_options, options)
+
         assert(fileBuffer.length > DATA_RECORD_OFFSET, "Not enough bytes to read DTED data. Incorrect file length.")
         
         this.uhl = new UserHeaderLabel(fileBuffer.toString('ascii', UHL_OFFSET, UHL_LENGTH))
@@ -266,29 +316,71 @@ class DtedTile {
         }
 
         //Verify hashes of dted file
+        if(options_internal.validateChecksum) {
         this.records.forEach(record => assert(record.validateChecksum(), "Expected DTED data to pass checksum"))
+        }
     }
 
+    /**
+     * Gets the maximum elevation for the tile.
+     */
+    public getMaxElevation(): number {
+        if(this.maxElevation === undefined) {
+            this.maxElevation = this.records.map(record => record.getMaxElelvation()).reduce((prev, curr) => (prev > curr) ? prev : curr)
+        }
+
+        return this.maxElevation
+    }
+
+    /**
+     * Gets the minimum elevation for the tile.
+     */
+    public getMinElevation(): number {
+        if(this.minElevation === undefined) {
+            this.minElevation = this.records.map(record => record.getMinElelvation()).reduce((prev, curr) => (prev < curr) ? prev : curr)
+        }
+
+        return this.minElevation
+    }
+
+    /**
+     * Gets the northern latitude of the dted file.
+     */
     public getNorthLatitude() : number {
         return this.dsi.northeastLatitudeDeg
     }
 
+    /**
+     * Gets the southern latitude of the dted file.
+     */
     public getSouthLatitude() : number {
         return this.dsi.southwestLatitudeDeg
     }
 
+    /**
+     * Gets the eastern latitude of the dted file.
+     */
     public getEastLongitude() : number {
         return this.dsi.northeastLongitudeDeg
     }
 
+    /**
+     * Gets the western latitude of the dted file.
+     */
     public getWestLongitude() : number {
         return this.dsi.southwestLongitudeDeg
     }
 
+    /**
+     * Checks if a latitutde and longitude pair are within or on the bounds of the DTED tile.
+     */
     public contains(latitude: number, longitude: number) : boolean {
         return latitude <= this.getNorthLatitude() && latitude >= this.getSouthLatitude() && longitude <= this.getEastLongitude() && longitude >= this.getWestLongitude()
     }
 
+    /**
+     * Gets the elevation (relative to EGM96 or MSL) at the latitude and longitude closest to the provided coordinate.
+     */
     public getNearestElevation(latitude: number, longitude: number): number {
         assert(this.contains(latitude, longitude))
 
@@ -296,7 +388,7 @@ class DtedTile {
         const latIndex = ((latitude - this.getSouthLatitude()) * (this.dsi.latitudeLineCount - 1))
         const longIndex = Math.round((longitude - this.getWestLongitude()) * (this.dsi.longitudeLineCount - 1))
         const dataRecord = this.records[longIndex]
-        return dataRecord.getElevation(latIndex)
+        return dataRecord.getNearestElevation(latIndex)
     }
 }
 
@@ -310,12 +402,17 @@ function isVoidElevation(elevation: number): boolean {
     return elevation === DTED_VOID
 }
 
+/**
+ * DTED data is stored in signed magnitude format. This needs to get converted to two's complement.
+ * @param signedBytes The bytes to convert from signed magnitude.
+ * @returns Number value, typically elevation
+ */
 function fromSignedMagnitude(signedBytes: Uint8Array ): number {
     let part1 = signedBytes[0]
     let part2 = signedBytes[1]
 
     let isNegative = (part1 & 0b10000000) != 0 //Check for sign bit set to 1
-    let num = (part1 << 8) | part2 //Swap endianess
+    let num = (part1 << 8) | part2
     if(isNegative) {
         num ^= 0b1000000000000000 //Invert sign bit
         num = ~num //invert bytes
@@ -373,7 +470,7 @@ function parseDDDMMSS_SH(str: string, offset: number) : number {
 function parseIntOrNa(str: string) : number | undefined {
     let num: number | undefined = undefined
     if(str.trim() !== "NA") {
-        this.absoluteVerticalAccuracyMeters = parseInt(str)
+        num = parseInt(str)
     }
     return num;
 }
@@ -383,10 +480,10 @@ function parseIntOrNa(str: string) : number | undefined {
  * @param filePath Path to the DTED file being read.
  * @returns A DTED tile if successful or null if unsuccessful.
  */
-function readDtedSync(filePath: string) : DtedTile {
+function readDtedSync(filePath: string, options?: Partial<DtedTileOptions>) : DtedTile {
     //Attempt to read in DTED file
     let fileBuffer = fs.readFileSync(filePath)
-    return new DtedTile(fileBuffer)
+    return new DtedTile(fileBuffer, options)
 }
 
 /**
@@ -394,10 +491,11 @@ function readDtedSync(filePath: string) : DtedTile {
  * @param filePath Path to the DTED file being read.
  * @returns A promise wrapping a DTED tile if successful or null if unsuccessful.
  */
-async function readDtedAsync(filePath: string) : Promise<DtedTile> {
+async function readDtedAsync(filePath: string, options?: Partial<DtedTileOptions>) : Promise<DtedTile> {
     //Attempt to read in DTED file
     let fileBuffer = await fsPromises.readFile(filePath)
-    return new DtedTile(fileBuffer)
+    return new DtedTile(fileBuffer, options)
 }
 
-export { UserHeaderLabel, DataSetIdentifictionRecord, AccuracyDescriptionRecord, AccuracySubregionDescription, CoordinatePairDescription, DataRecord, DtedTile, isVoidElevation, readDtedAsync, readDtedSync}
+export { UserHeaderLabel, DataSetIdentifictionRecord, AccuracyDescriptionRecord, AccuracySubregionDescription, CoordinatePairDescription, DataRecord, DtedTile, DtedTileOptions, 
+    isVoidElevation, readDtedAsync, readDtedSync}
