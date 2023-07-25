@@ -1,7 +1,0 @@
-test/*
-src/*
-.github/*
-.parcel-cache/*
-coverage/*
-jest.config.ts
-tsconfig.json
