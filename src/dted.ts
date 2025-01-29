@@ -414,7 +414,7 @@ class DtedTile {
     assert(this.contains(latitude, longitude))
 
     //map coordinate to 0..1 range and then to the range of indexes
-    const latIndex = (latitude - this.getSouthLatitude()) * (this.dsi.latitudeLineCount - 1)
+    const latIndex = Math.round((latitude - this.getSouthLatitude()) * (this.dsi.latitudeLineCount - 1))
     const longIndex = Math.round(
       (longitude - this.getWestLongitude()) * (this.dsi.longitudeLineCount - 1)
     )
